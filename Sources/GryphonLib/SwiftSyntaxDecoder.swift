@@ -20,7 +20,7 @@ import Foundation
 import SwiftSyntax
 
 #if swift(>=5.6)
-import SwiftSyntaxParser
+import SwiftParser
 #endif
 
 import SourceKittenFramework
@@ -484,7 +484,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 
 		Compiler.logStart("🧑‍💻  Calling SwiftSyntax...")
 		// Call SwiftSyntax to get the tree
-		let tree = try SyntaxParser.parse(URL(fileURLWithPath: sourceFile.path))
+		let tree = try Parser.parse(source: String(contentsOfFile: sourceFile.path))
 		Compiler.logEnd("✅  Done calling SwiftSyntax.")
 
 		// Initialize the properties
@@ -820,7 +820,8 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 	{
 		let result: MutableList<Comment> = []
 
-		if let leadingTrivia = syntax.leadingTrivia {
+		let leadingTrivia = syntax.leadingTrivia
+		if !leadingTrivia.isEmpty {
 			var startOffset = syntax.position.utf8Offset
 			for trivia in leadingTrivia {
 				let endOffset = startOffset + trivia.sourceLength.utf8Length
@@ -892,7 +893,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 			return try [convertDeferStatement(deferStatement)]
 		}
 		if let ifStatement: IfLikeSyntax =
-			statement.as(IfStmtSyntax.self) ??
+			statement.as(IfExprSyntax.self) ??
 			statement.as(GuardStmtSyntax.self)
 		{
 			return try [convertIfStatement(ifStatement)]
@@ -903,7 +904,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 		if let whileStatement = statement.as(WhileStmtSyntax.self) {
 			return try [convertWhileStatement(whileStatement)]
 		}
-		if let switchStatement = statement.as(SwitchStmtSyntax.self) {
+		if let switchStatement = statement.as(SwitchExprSyntax.self) {
 			return try [convertSwitchStatement(switchStatement)]
 		}
 		if let doStatement = statement.as(DoStmtSyntax.self) {
@@ -925,13 +926,14 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 			syntax: Syntax(doStatement),
 			range: doStatement.getRange(inFile: self.sourceFile),
 			statements: try convertBlock(doStatement.body)))
-
-		if let catchClauses = doStatement.catchClauses {
+		let catchClauses = doStatement.catchClauses
+		if !catchClauses.isEmpty {
 			for catchClause in catchClauses {
 				let variableDeclaration: VariableDeclaration?
 
 				#if swift(>=5.3)
-					if let catchItems = catchClause.catchItems, catchItems.count > 1 {
+					let catchItems = catchClause.catchItems
+					if catchItems.count > 1 {
 						let secondItem = catchItems.dropFirst().first!
 						Compiler.handleWarning(
 							message: "Multiple catch clauses aren't supported yet.",
@@ -940,7 +942,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 							sourceFile: self.sourceFile,
 							sourceFileRange: secondItem.getRange(inFile: self.sourceFile))
 					}
-					let maybePattern = catchClause.catchItems?.first?.pattern
+					let maybePattern = catchClause.catchItems.first?.pattern
 				#else
 					let maybePattern = catchClause.pattern
 				#endif
@@ -963,7 +965,9 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 							setter: nil,
 							access: nil,
 							isOpen: false,
-							isLet: valueBindingPattern.letOrVarKeyword.text == "let",
+							// TODO(Jan 19, 2024): 
+							// isLet: valueBindingPattern.letOrVarKeyword.text == "let",
+							isLet: true,
 							isStatic: false,
 							extendsType: nil,
 							annotations: [])
@@ -993,7 +997,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 	}
 
 	func convertSwitchStatement(
-		_ switchStatement: SwitchStmtSyntax)
+		_ switchStatement: SwitchExprSyntax)
 		throws -> Statement
 	{
 		let switchExpression = try convertExpression(switchStatement.expression)
@@ -1213,7 +1217,9 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 						setter: nil,
 						access: nil,
 						isOpen: false,
-						isLet: optionalBinding.letOrVarKeyword.text == "let",
+						// TODO(Jan 19, 2024): 
+						// isLet: optionalBinding.letOrVarKeyword.text == "let",
+						isLet: true,
 						isStatic: false,
 						extendsType: nil,
 						annotations: [])))
@@ -1290,7 +1296,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 		statements.append(contentsOf: try convertBlock(ifStatement.statements))
 
 		let elseStatement: IfStatement?
-    if let elseIfSyntax = ifStatement.children(viewMode: .sourceAccurate).last?.as(IfStmtSyntax.self) {
+    if let elseIfSyntax = ifStatement.children(viewMode: .sourceAccurate).last?.as(IfExprSyntax.self) {
 			elseStatement = try convertIfStatement(elseIfSyntax)
 		}
 		else if let elseBlock = ifStatement.elseBlock {
@@ -1545,8 +1551,9 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 		let subscriptReturnType = try convertType(subscriptDeclaration.result.returnType)
 
 		let accessors: List<Accessor>
-		if let accessorBlock = subscriptDeclaration.accessor?.as(AccessorBlockSyntax.self) {
-			accessors = List(accessorBlock.accessors.compactMap { accessor in
+		if let accessorBlock = subscriptDeclaration.accessor?.as(AccessorBlockSyntax.self),
+				case AccessorBlockSyntax.Accessors.accessors(let decl) = accessorBlock.accessors {
+			accessors = List(decl.compactMap { accessor in
 				if let body = accessor.body {
 					return Accessor(
 						isGet: accessor.accessorKind.text == "get",
@@ -1558,7 +1565,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 				}
 			})
 
-			if accessors.count != accessorBlock.accessors.count {
+			if accessors.count != decl.count {
 				// If we failed to get one of the bodies
 				try result.append(errorStatement(
 					forASTNode: Syntax(accessorBlock),
@@ -1690,8 +1697,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 					block = conditionBlock
 				}
 				else if let prefixOperatorCondition = condition.as(PrefixOperatorExprSyntax.self),
-					let operatorString = prefixOperatorCondition.operatorToken?.text,
-					operatorString == "!",
+					prefixOperatorCondition.operatorToken.text == "!",
 					let identifierCondition =
 						prefixOperatorCondition.postfixExpression.as(IdentifierExprSyntax.self),
 					identifierCondition.identifier.text == "GRYPHON"
@@ -1801,8 +1807,9 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 			if let caseSyntax = syntax.element.as(EnumCaseDeclSyntax.self) {
 				for element in caseSyntax.elements {
 					let associatedValues: MutableList<LabeledType>
-					if let parameters = element.associatedValue?.parameterList {
-						let convertedParameters = try convertParameters(parameters)
+					if let parameters = element.associatedValue?.parameterList,
+						 let funcParams = parameters.as(FunctionParameterListSyntax.self) {
+						let convertedParameters = try convertParameters(funcParams)
 						associatedValues = convertedParameters.map {
 							LabeledType(
 								label: $0.label,
@@ -2090,8 +2097,8 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 	{
 		let result: MutableList<FunctionParameter> = []
 		for parameter in parameterList {
-			if let firstName = parameter.firstName?.text,
-         let typeToken = parameter.children(viewMode: .sourceAccurate).first(where: { $0.is(TypeSyntax.self) })
+			let firstName = parameter.firstName.text
+			if let typeToken = parameter.children(viewMode: .sourceAccurate).first(where: { $0.is(TypeSyntax.self) })
 			{
 				let typeSyntax = typeToken.as(TypeSyntax.self)!
 
@@ -2148,7 +2155,8 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 		_ variableDeclaration: VariableDeclSyntax)
 		throws -> MutableList<Statement>
 	{
-		let isLet = (variableDeclaration.letOrVarKeyword.text == "let")
+		// TODO(Jan 19, 2024): 
+		let isLet = /* (variableDeclaration.letOrVarKeyword.text == "let") */ true
 
 		let result: MutableList<VariableDeclaration> = []
 		let errors: MutableList<Statement> = []
@@ -2248,11 +2256,12 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 						annotations: [])
 				}
 				else if let maybeAccesor = patternBinding.accessor,
-					let accessorBlock = maybeAccesor.as(AccessorBlockSyntax.self)
+					let accessorBlock = maybeAccesor.as(AccessorBlockSyntax.self),
+					case AccessorBlockSyntax.Accessors.accessors(let decl) = accessorBlock.accessors
 				{
 					// If there's an explicit getter or setter (e.g. `get { return 0 }`)
 
-					for accessor in accessorBlock.accessors {
+					for accessor in decl {
 						let range = accessor.getRange(inFile: self.sourceFile)
 						let prefix = accessor.accessorKind.text
 
@@ -2754,8 +2763,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 		_ prefixOperatorExpression: PrefixOperatorExprSyntax)
 		throws -> Expression
 	{
-		guard let typeName = prefixOperatorExpression.getType(fromList: self.expressionTypes),
-			let operatorSymbol = prefixOperatorExpression.operatorToken?.text else
+		guard let typeName = prefixOperatorExpression.getType(fromList: self.expressionTypes) else
 		{
 			return try errorExpression(
 				forASTNode: Syntax(prefixOperatorExpression),
@@ -2764,6 +2772,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 
 		let subExpression = try convertExpression(prefixOperatorExpression.postfixExpression)
 
+		let operatorSymbol = prefixOperatorExpression.operatorToken.text
 		return PrefixUnaryExpression(
 			syntax: Syntax(prefixOperatorExpression),
 			range: prefixOperatorExpression.getRange(inFile: self.sourceFile),
@@ -2899,7 +2908,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 				let castedParameterList = parameterList.as(FunctionParameterListSyntax.self)
 			{
 				cleanInputParameters = List(castedParameterList)
-					.map { $0.firstName?.text ?? $0.secondName?.text ?? "_" }
+					.map { $0.firstName.text ?? $0.secondName?.text ?? "_" }
 			}
 			else {
 				return try errorExpression(
@@ -3898,7 +3907,7 @@ public class SwiftSyntaxDecoder: SyntaxVisitor {
 			}.joined(separator: ", ")
 
 			return try "(" + argumentsType + ") -> " +
-				convertType(functionType.returnType)
+				convertType(functionType.returnClause.type)
 		}
 		if let tupleType = typeSyntax.as(TupleTypeSyntax.self) {
 			let elements = try tupleType.elements.map { try convertType($0.type) }
@@ -4137,7 +4146,7 @@ extension InitializerDeclSyntax: FunctionLikeSyntax {
 	}
 }
 
-/// A protocol to convert IfStmtSyntax and GuardStmtSyntax with the same algorithm.
+/// A protocol to convert IfExprSyntax and GuardStmtSyntax with the same algorithm.
 protocol IfLikeSyntax: SyntaxProtocol {
 	var ifConditions: ConditionElementListSyntax { get }
 	var statements: CodeBlockSyntax { get }
@@ -4145,7 +4154,7 @@ protocol IfLikeSyntax: SyntaxProtocol {
 	var isGuard: Bool { get }
 }
 
-extension IfStmtSyntax: IfLikeSyntax {
+extension IfExprSyntax: IfLikeSyntax {
 	var ifConditions: ConditionElementListSyntax {
 		return self.conditions
 	}

@@ -35,7 +35,7 @@ fatalError("Only Swift 5.8 is currently supported.")
 // Which SwiftSyntax version to use
 let swiftSyntaxPackage = Package.Dependency.package(
 	url: "https://github.com/apple/swift-syntax.git",
-	from: "508.0.0")
+	from: "509.1.0")
 
 let package = Package(
 	name: "Gryphon",
@@ -57,7 +57,7 @@ let package = Package(
 			name: "GryphonLib",
 			dependencies: [
 				.product(name: "SwiftSyntax", package: "swift-syntax"),
-				.product(name: "SwiftSyntaxParser", package: "swift-syntax"),
+				.product(name: "SwiftParser", package: "swift-syntax"),
 				.product(name: "SourceKittenFramework", package: "SourceKitten")
 			]),
 		.executableTarget(
